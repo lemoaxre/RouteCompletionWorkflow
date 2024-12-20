@@ -3,7 +3,7 @@
 ' Converts any line Shapefile into an uploadable file.
 ' Created for testing purposes.
 ' Written by Alexander Moore.
-' Written on Monday December 16th, 2024.
+' Last Updated on Monday December 20th, 2024.
 '''
 
 import math
@@ -11,9 +11,12 @@ import math
 ## Variables 
 #################################################################################
 
-segmentName = 'STREETNAME'
-projectedCRS = 'EPSG:3857'
-updateGeometry = True
+segmentName = ''# This is the field used to make SEGMENT, it doesnt need to be used.
+groupName = 'group_'
+routeName = 'route_'
+projectedCRS = 'EPSG:3857' # Ideally, set this to a local projected CRS.
+maxSegmentLength = 300 # Unit depends on CRS, could be in metres, feet, etc.
+updateGeometry = True 
 passCountDefault = 2
 roadWidthDefault = 10
 
@@ -34,6 +37,7 @@ def add_route(layer):
     layer.updateFields()
     features = layer.getFeatures()
     index = 0
+    count = layer.featureCount()
     for feature in features:
         index+=1
         if count / 2 > index:
@@ -44,7 +48,7 @@ def add_route(layer):
     layer.commitChanges()
     
 def create_grid(layer):
-    extent_geom = QgsGeometry.fromRect(result1.extent())
+    extent_geom = QgsGeometry.fromRect(layer.extent())
     area_geom = extent_geom.area()
 
     grid_size = math.sqrt((area_geom / 4))
@@ -57,9 +61,9 @@ def create_grid(layer):
     grid_layer = grid_out['OUTPUT']
     return grid_layer
     
-def fix_geometry(layer):
+def fix_geometry(layer): 
     split_out1 = processing.run("native:splitlinesbylength", {'INPUT':layer,
-        'LENGTH':300,
+        'LENGTH':maxSegmentLength,
         'OUTPUT':'TEMPORARY_OUTPUT'})
     split_layer1 = split_out1['OUTPUT']
 
@@ -74,7 +78,7 @@ def fix_geometry(layer):
     split_layer3 = split_out3['OUTPUT']
     return split_layer3
 
-def add_group(layer, grid_layer):
+def add_group(layer, grid_layer): # Uses grid to assign group layer.
     joined_out = processing.run("native:joinattributesbylocation", {'INPUT':layer,
         'JOIN':grid_layer,
         'JOIN_FIELDS':['id'],
@@ -92,7 +96,7 @@ def add_group(layer, grid_layer):
     joined_layer.deleteAttribute(joined_layer.fields().indexOf('grouptool_id'))
     return joined_layer
     
-def check_field(layer, fieldName):
+def check_field(layer, fieldName): # return true if missing, false if exists.
     notExists = True 
     for field in layer.fields():
         if field.displayName().lower() == fieldName.lower():
@@ -117,7 +121,6 @@ def add_segment(layer, missingField):
     features = layer.getFeatures()
     count = 0
     missingSegment = check_field(layer, segmentName)
-    print(missingSegment)
     for feature in features:
         count+=1
         if missingSegment:
@@ -147,6 +150,16 @@ def calc_len(layer):
         feature['segLength'] = len
         layer.updateFeature(feature)
     layer.commitChanges()
+
+def copy_field(layer, field, attribute):
+    layer.startEditing()
+    layer.addAttribute(QgsField(attribute, QVariant.String))
+    layer.updateFields()
+    features = layer.getFeatures()
+    for feature in features:
+        feature[attribute] = feature[field]
+        layer.updateFeature(feature)
+    layer.commitChanges()
     
 ## Main Script
 #################################################################################
@@ -155,23 +168,30 @@ layer = iface.activeLayer()
 
 result = projected_crs(layer, projectedCRS) 
 
-if check_field(result, 'route'):
+## Determine what needs to be done with route attribute
+missing_route = check_field(result, 'route')
+missing_sub = check_field(result, routeName)
+if missing_route and not missing_sub: ## Incorrectly named route field
+    copy_field(result, routeName, 'route')
+    replace_nulls(result, 'route', 'Route NULL')
+elif missing_route and missing_sub: ## There is no route field.
     add_route(result)
 else:
     replace_nulls(result, 'route', 'Route NULL')
-    
 
-group_missing = check_field(result, 'group')
+if updateGeometry: 
+    result = fix_geometry(result)
 
-if group_missing:
+## Determine what needs to be done with group attribute 
+group_sub = check_field(result, groupName)
+group_missing = check_field(result, 'group')  
+if group_missing and not group_sub: ## There is an incorrectly named group field
+    copy_field(result, groupName, 'group')
+    replace_nulls(result, 'group', 'Zone NULL')
+elif group_missing and group_sub: ## There is no group field
     grid_layer = create_grid(result)
-    
-
-result = fix_geometry(result)
-
-if group_missing:
     result = add_group(result, grid_layer)
-else: 
+else: ## group field already exists
     replace_nulls(result, 'group', 'Zone NULL')
     
 add_segment(result, check_field(result, 'segment'))
@@ -187,3 +207,4 @@ final_layer.deleteSelectedFeatures()
 final_layer.commitChanges()
 
 QgsProject.instance().addMapLayer(final_layer)
+print('Script has finished.')
